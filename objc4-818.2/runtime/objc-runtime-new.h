@@ -1170,20 +1170,29 @@ struct class_ro_t {
     }
 };
 
-
+// https://juejin.cn/post/6881940070056755207#heading-12
 /***********************************************************************
 * list_array_tt<Element, List, Ptr>
 * Generic implementation for metadata that can be augmented by categories.
 *
+* 实际应用：
+* 1. class method_array_t : public list_array_tt<method_t, method_list_t>
+* 2. class property_array_t : public list_array_tt<property_t, property_list_t>
+* 3. class protocol_array_t : public list_array_tt<protocol_ref_t, protocol_list_t>
+ 
 * Element is the underlying metadata type (e.g. method_t)
+ Element 是基础元数据类型（例如: method_t）
+ 
 * List is the metadata's list type (e.g. method_list_t)
+ List 是元数据的列表类型（例如: method_list_t）
+ 
 * List is a template applied to Element to make Element*. Useful for
 * applying qualifiers to the pointer type.
 *
 * A list_array_tt has one of three values:
-* - empty
-* - a pointer to a single list
-* - an array of pointers to lists
+* - empty （空）
+* - a pointer to a single list  （指向单个列表的指针）(array_t *)
+* - an array of pointers to lists   指向列表的指针数组）(List* lists[0] 元素是 List * 的数组)
 *
 * countLists/beginLists/endLists iterate the metadata lists
 * count/begin/end iterate the underlying metadata elements
@@ -1191,12 +1200,16 @@ struct class_ro_t {
 template <typename Element, typename List, template<typename> class Ptr>
 class list_array_tt {
     struct array_t {
+        // count 是 lists 数组中 List * 的数量
         uint32_t count;
-        Ptr<List> lists[0];
-
+        // 数组中的元素是 List * (实际类型是 entsize_list_tt *)
+        Ptr<List> lists[0];// 这里使用了 0 长度
+        // 所占用的字节总数
         static size_t byteSize(uint32_t count) {
             return sizeof(array_t) + count*sizeof(lists[0]);
         }
+        
+        // 根据 count 计算所有的字节总数
         size_t byteSize() {
             return byteSize(count);
         }
@@ -1204,27 +1217,40 @@ class list_array_tt {
 
  protected:
     class iterator {
+        // 指向指针的指针，且中间夹了一个 const 修饰，
+        // const 表示前半部分 List * 不可更改。
+        // lists 是一个指向指针的指针，表示它指向的这个指针的指向不可更改。
+        
+        // 对应 array_t 中的 List* lists[0]
         const Ptr<List> *lists;
         const Ptr<List> *listsEnd;
+        // 这里的 List 都是 entsize_list_tt 类型即 m 和 mEnd 是
+        // entsize_list_tt::iterator 类型
         typename List::iterator m, mEnd;
 
      public:
+        // 构造函数，初始化列表初始化 lists、listsEnd，
+        // if 内部，*begin 是 entsize_list_tt 指针
         iterator(const Ptr<List> *begin, const Ptr<List> *end)
             : lists(begin), listsEnd(end)
         {
             if (begin != end) {
+                // m 和 mEnd 分别是指向 List* lists[0] 数组中 *begin 列表的第一个元素和最后一个元素的迭代器
                 m = (*begin)->begin();
                 mEnd = (*begin)->end();
             }
         }
 
+        // 重载 * 操作符
         const Element& operator * () const {
             return *m;
         }
+        // 重载 * 操作符
         Element& operator * () {
             return *m;
         }
 
+        // 重载 != 操作符
         bool operator != (const iterator& rhs) const {
             if (lists != rhs.lists) return true;
             if (lists == listsEnd) return false;  // m is undefined
@@ -1232,35 +1258,56 @@ class list_array_tt {
             return false;
         }
 
+        // 自增操作
         const iterator& operator ++ () {
             ASSERT(m != mEnd);
+            // 这里是指迭代器指向的当前的方法列表的迭代器
+            // (array_t 的 lists 中包含多个方法列表，每个列表迭代到 mEnd 后，会切换到下一个列表，并更新 m 和 mEnd)
+            //
+            // entsize_list_tt::iterator 自增
             m++;
             if (m == mEnd) {
+                // 如果当前已经迭代到当前方法列表的末尾
                 ASSERT(lists != listsEnd);
+                // 自增，切到 array_t 的 lists 数组中的下一个方法列表中
                 lists++;
                 if (lists != listsEnd) {
+                    // 更新新的方法列表的 m 和 mEnd
                     m = (*lists)->begin();
                     mEnd = (*lists)->end();
                 }
             }
+            // 取出 iterator 的内容
             return *this;
         }
     };
 
  private:
     union {
+        // 联合体，包含两种情况：
+        // list_array_tt 存储一个 entsize_list_tt 指针，保存一组内容（如只有一组 method_t）。
         Ptr<List> list;
+        // list_array_tt 存储一个 array_t 指针，array_t 中是 entsize_list_tt * lists[0]，
+        // 存储 entsize_list_tt * 的数组。
+        //（如多组 method_t。如给某个类编写了多个 category，每个 category 的实例方法数组会被一组一组追加进来，
+        // 而不是说不同 category 的实例方法统一追加到一个大数组中）
         uintptr_t arrayAndFlag;
     };
 
+    // 第 1 位标识是指向单个列表的指针还是指向列表的指针数组。
+    // 如果是 1 表示是指向列表的指针数组，即使用 array_t。
     bool hasArray() const {
         return arrayAndFlag & 1;
     }
 
+    // arrayAndFlag 第 1 位置为 0，其它位保持不变，然后强转为 array_t *
+    // （第 1 位只是用做标识位，真正使用 arrayAndFlag 的值时需要把第 1 位置回 0）
     array_t *array() const {
         return (array_t *)(arrayAndFlag & ~1);
     }
 
+    // 把 array_t *array 强转为 uintptr_t，
+    // 并把第 1 位置为 0，标识当前 list_array_t 内部数据使用的是 array_t
     void setArray(array_t *array) {
         arrayAndFlag = (uintptr_t)array | 1;
     }
@@ -1271,6 +1318,7 @@ class list_array_tt {
     }
 
  public:
+    // 构造函数
     list_array_tt() : list(nullptr) { }
     list_array_tt(List *l) : list(l) { }
     list_array_tt(const list_array_tt &other) {
@@ -1286,32 +1334,40 @@ class list_array_tt {
         return *this;
     }
 
+    // 统计所有元素的个数，注意这里是所有 Element 的个数
     uint32_t count() const {
         uint32_t result = 0;
         for (auto lists = beginLists(), end = endLists(); 
              lists != end;
              ++lists)
         {
+            // 例如使用 entsize_list_tt -> count，统计 lists 中每个方法列表中的 method_t 的数量
             result += (*lists)->count;
         }
         return result;
     }
 
+    // begin 迭代器
     iterator begin() const {
         return iterator(beginLists(), endLists());
     }
 
+    // end 迭代器
     iterator end() const {
         auto e = endLists();
         return iterator(e, e);
     }
 
+    // 例如方法列表数量（属性列表数量，协议列表数量等）（例如: method_array_t 下方法列表的数量）
     inline uint32_t countLists(const std::function<const array_t * (const array_t *)> & peek) const {
         if (hasArray()) {
+            // 如果此时是 array_t，则返回其 count
             return peek(array())->count;
         } else if (list) {
+            // 如果此时是指向单个列表的指针，则仅有 1 个方法列表
             return 1;
         } else {
+            // 其它为 0
             return 0;
         }
     }
@@ -1320,83 +1376,113 @@ class list_array_tt {
         return countLists([](array_t *x) { return x; });
     }
 
+    // Lists 的起始地址
     const Ptr<List>* beginLists() const {
         if (hasArray()) {
+            // 如果此时是指向列表的指针数组，则直接返回 lists
             return array()->lists;
         } else {
+            // 如果此时是指向单个列表的指针，则 & 取出其地址返回
             return &list;
         }
     }
 
+    // Lists 的 end 位置（注意 end 位置是指最后一个元素的后面，不是指最后一个元素）
     const Ptr<List>* endLists() const {
         if (hasArray()) {
+            // 指针偏移
             return array()->lists + array()->count;
         } else if (list) {
+            // &list + 1 偏移到整个指针的后面
             return &list + 1;
         } else {
+            // 为空时，如果 list 为空，那对空取地址应该是 0x0
             return &list;
         }
     }
 
+    // 附加 Lists，这里分三种情况
     void attachLists(List* const * addedLists, uint32_t addedCount) {
         if (addedCount == 0) return;
 
         if (hasArray()) {
+            // 1): 如果目前是指向列表的指针数组，即把 addedLists 追加到 List* lists[0] 数组中
             // many lists -> many lists
             uint32_t oldCount = array()->count;
             uint32_t newCount = oldCount + addedCount;
             array_t *newArray = (array_t *)malloc(array_t::byteSize(newCount));
             newArray->count = newCount;
+            // 更新 count 值
             array()->count = newCount;
 
             for (int i = oldCount - 1; i >= 0; i--)
+                // 把原始的 array()->lists 移动到了后面的内存空间中，
+                // 前面空出了 [array()->lists, array()->lists + addedCount] 的空间
                 newArray->lists[i + addedCount] = array()->lists[i];
             for (unsigned i = 0; i < addedCount; i++)
+                // 把要新追加的 addedLists 添加到上面预留出的空间
+                //（这里证明了分类中添加的同名函数会 "覆盖" 类定义中的原始函数）
                 newArray->lists[i] = addedLists[i];
             free(array());
+            // 内部 realloc 函数申请  空间，同时 setArray 函数把第 1 位置为 1，作为标记
             setArray(newArray);
             validate();
         }
         else if (!list  &&  addedCount == 1) {
+            // 2): 如果目前 lists 不存在并且 addedCount 等于 1，则直接把 addedLists 赋值给 list
+            // 此时只保存一个方法列表
             // 0 lists -> 1 list
             list = addedLists[0];
             validate();
         } 
         else {
+            // 3): 如果目前是指向单个列表的指针需要转化为指向列表的指针数组
             // 1 list -> many lists
             Ptr<List> oldList = list;
             uint32_t oldCount = oldList ? 1 : 0;
             uint32_t newCount = oldCount + addedCount;
+            // 内部 realloc 函数申请空间，setArray 函数把第 1 位置为 1，作为标记
+            // 因为是新开辟空间，所以用的 malloc
             setArray((array_t *)malloc(array_t::byteSize(newCount)));
+            // 更新 count
             array()->count = newCount;
+            // 这里同样也是把 oldList 放在后面
             if (oldList) array()->lists[addedCount] = oldList;
+            // 把要新追加的 addedLists 复制到 array()->lists 起始的空间内
             for (unsigned i = 0; i < addedCount; i++)
                 array()->lists[i] = addedLists[i];
             validate();
         }
     }
 
+    // 释放内存空间
     void tryFree() {
         if (hasArray()) {
+            // 如果当前是指向列表的指针数组，首先进行循环释放列表
             for (uint32_t i = 0; i < array()->count; i++) {
                 try_free(array()->lists[i]);
             }
+            // 最后释放 array()
             try_free(array());
         }
         else if (list) {
+            // 如果当前仅有一个方法列表
             try_free(list);
         }
     }
 
+    // 复制一份 list_array_t
     template<typename Other>
     void duplicateInto(Other &other) {
         if (hasArray()) {
             array_t *a = array();
             other.setArray((array_t *)memdup(a, a->byteSize()));
             for (uint32_t i = 0; i < a->count; i++) {
+                // 循环方法列表进行复制
                 other.array()->lists[i] = a->lists[i]->duplicate();
             }
         } else if (list) {
+            // 如果仅有一个方法列表，则直接复制后进行赋值
             other.list = list->duplicate();
         } else {
             other.list = nil;
@@ -1416,10 +1502,13 @@ class method_array_t :
     method_array_t() : Super() { }
     method_array_t(method_list_t *l) : Super(l) { }
 
+    // category 添加的函数的起始地址，由于 category 函数会追加到函数列表的最前面，
+    // 所以 beginLists 就是 beginCategoryMethodLists
     const method_list_t_authed_ptr<method_list_t> *beginCategoryMethodLists() const {
         return beginLists();
     }
     
+    // 分类添加的函数的结束地址，实现在 objc-runtime-new.mm 中
     const method_list_t_authed_ptr<method_list_t> *endCategoryMethodLists(Class cls) const;
 };
 
@@ -1427,6 +1516,7 @@ class method_array_t :
 class property_array_t : 
     public list_array_tt<property_t, property_list_t, RawPtr>
 {
+    // 类型声明
     typedef list_array_tt<property_t, property_list_t, RawPtr> Super;
 
  public:

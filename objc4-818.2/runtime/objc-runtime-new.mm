@@ -350,13 +350,16 @@ const method_list_t_authed_ptr<method_list_t> *method_array_t::endCategoryMethod
 
     if (mlists == mlistsEnd  ||  !cls->data()->ro()->baseMethods())
     {
-        // No methods, or no base methods. 
+        // No methods, or no base methods.
+        // 没有方法，也没有基本方法。
         // Everything here is a category method.
+        // 这里的一切都是分类方法。
         return mlistsEnd;
     }
     
     // Have base methods. Category methods are 
     // everything except the last method list.
+    // 有基本方法。分类方法是除最后一个方法列表以外的所有内容。
     return mlistsEnd - 1;
 }
 
