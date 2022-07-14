@@ -1623,26 +1623,27 @@ objc_object::sidetable_retain(bool locked)
 #if SUPPORT_NONPOINTER_ISA
     ASSERT(!isa.nonpointer);
 #endif
-    SideTable& table = SideTables()[this];
+    SideTable& table = SideTables()[this];  //[MC] 获取对象的散列表
     
-    if (!locked) table.lock();
-    size_t& refcntStorage = table.refcnts[this];
-    if (! (refcntStorage & SIDE_TABLE_RC_PINNED)) {
-        refcntStorage += SIDE_TABLE_RC_ONE;
+    if (!locked) table.lock();//[MC] 如果没有加锁，则调用散列表的互斥锁进行加锁
+    size_t& refcntStorage = table.refcnts[this];//[MC] 获取当前引用计数
+    if (! (refcntStorage & SIDE_TABLE_RC_PINNED)) {//[MC] 判断是否存满
+        refcntStorage += SIDE_TABLE_RC_ONE;//[MC] 引用计数增加
     }
-    table.unlock();
+    table.unlock();//[MC] 解锁
 
     return (id)this;
 }
 
 
+//[MC] 该方法的主要作用拿到当前对象的散列表中的引用计数表SideTable，然后判断是否在析构，判断没有存满的话就引用计数增加
 bool
 objc_object::sidetable_tryRetain()
 {
 #if SUPPORT_NONPOINTER_ISA
     ASSERT(!isa.nonpointer);
 #endif
-    SideTable& table = SideTables()[this];
+    SideTable& table = SideTables()[this];  //[MC] 拿到当前对象的散列表
 
     // NO SPINLOCK HERE
     // _objc_rootTryRetain() is called exclusively by _objc_loadWeak(), 
@@ -1654,14 +1655,14 @@ objc_object::sidetable_tryRetain()
     // }
 
     bool result = true;
-    auto it = table.refcnts.try_emplace(this, SIDE_TABLE_RC_ONE);
-    auto &refcnt = it.first->second;
+    auto it = table.refcnts.try_emplace(this, SIDE_TABLE_RC_ONE);    //[MC] 拿到SideTable中的引用计数表`RefcountMap`
+    auto &refcnt = it.first->second;    //[MC] 引用计数表中的size_t
     if (it.second) {
         // there was no entry
-    } else if (refcnt & SIDE_TABLE_DEALLOCATING) {
+    } else if (refcnt & SIDE_TABLE_DEALLOCATING) {  //[MC] 正在析构
         result = false;
-    } else if (! (refcnt & SIDE_TABLE_RC_PINNED)) {
-        refcnt += SIDE_TABLE_RC_ONE;
+    } else if (! (refcnt & SIDE_TABLE_RC_PINNED)) { //[MC] 没有存满
+        refcnt += SIDE_TABLE_RC_ONE;    //[MC] 引用计数增加
     }
     
     return result;

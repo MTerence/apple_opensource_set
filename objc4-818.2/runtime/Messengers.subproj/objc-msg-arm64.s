@@ -123,10 +123,12 @@ _objc_indexed_classes:
 1:
 
 #elif __LP64__
+//[MC] needs_auth = 1 不满足
 .if \needs_auth == 0 // _cache_getImp takes an authed class already
 	mov	p16, \src
 .else
 	// 64-bit packed isa
+    //[MC] src为isa
 	ExtractISA p16, \src, \auth_address
 .endif
 #else
@@ -349,22 +351,31 @@ LExit$0:
 	mov	x15, x16			// stash the original isa
 LLookupStart\Function:
 	// p1 = SEL, p16 = isa
+    //[MC] 模拟器环境或mac
 #if CACHE_MASK_STORAGE == CACHE_MASK_STORAGE_HIGH_16_BIG_ADDRS
 	ldr	p10, [x16, #CACHE]				// p10 = mask|buckets
 	lsr	p11, p10, #48			// p11 = mask
 	and	p10, p10, #0xffffffffffff	// p10 = buckets
 	and	w12, w1, w11			// x12 = _cmd & mask
+    //[MC] 真机环境
 #elif CACHE_MASK_STORAGE == CACHE_MASK_STORAGE_HIGH_16
+    //[MC] x16（class）平移CACHE(16)位得到cache，首地址指向_bucketsAndMaybeMask，即p11=_bucketsAndMaybeMask
 	ldr	p11, [x16, #CACHE]			// p11 = mask|buckets
+
+//[MC] 64位真机环境
 #if CONFIG_USE_PREOPT_CACHES
+//[MC] A12后处理器
 #if __has_feature(ptrauth_calls)
 	tbnz	p11, #0, LLookupPreopt\Function
 	and	p10, p11, #0x0000ffffffffffff	// p10 = buckets
-#else
+#else   //[MC] A12以前设备
+    //[MC] p11 & 0x0000fffffffffffe得到buckets
 	and	p10, p11, #0x0000fffffffffffe	// p10 = buckets
+    //[MC] 判断 p11第0位是否不为0，为0继续下面流程
 	tbnz	p11, #0, LLookupPreopt\Function
 #endif
 	eor	p12, p1, p1, LSR #7
+    //[MC] p12 得到方法缓存的下标 对应cache_t->insert->cache_hash函数
 	and	p12, p12, p11, LSR #48		// x12 = (_cmd ^ (_cmd >> 7)) & mask
 #else
 	and	p10, p11, #0x0000ffffffffffff	// p10 = buckets
@@ -381,17 +392,37 @@ LLookupStart\Function:
 #error Unsupported cache mask storage for ARM64.
 #endif
 
+    /* [MC]
+     #define PTRSHIFT 3
+     p10 = buckets, p12 = index(第一次查询的index)
+     一个bucket_t占用16字节(sel,imp两个指针)
+     p12（index）左移4(= 1 + PTRSHIFT)位就是index * 16
+     其实就是buckets首地址加上index个bucket_t内存大小，
+     找到index位置的bucket，赋值给p13
+     p13 = p10 + (p12 << 4) = buckets + index * 16，内存平移
+     p13 = index位置的bucket
+     */
 	add	p13, p10, p12, LSL #(1+PTRSHIFT)
 						// p13 = buckets + ((_cmd & mask) << (1+PTRSHIFT))
 
 						// do {
+    /** [MC]
+    #define BUCKET_SIZE      (2 * __SIZEOF_POINTER__)
+    x13平移-BUCKET_SIZE，到下个bicket得到 p17(imp),p9(sel)
+    */
+
 1:	ldp	p17, p9, [x13], #-BUCKET_SIZE	//     {imp, sel} = *bucket--
+    //[MC] 比较 p9和_cmd
 	cmp	p9, p1				//     if (sel != _cmd) {
+    //[MC] 不相对执行 3: 开始下次循环
 	b.ne	3f				//         scan more
 						//     } else {
+//[MC] 相等，找到缓存
 2:	CacheHit \Mode				// hit:    call or return imp
 						//     }
+//[MC] cbz ： 和 0 比较，如果结果为零就转移(只能跳到后面的指令)
 3:	cbz	p9, \MissLabelDynamic		//     if (sel == 0) goto Miss;
+    //[MC] b.hs：判断是否无符号小于，满足执行1
 	cmp	p13, p10			// } while (bucket >= buckets)
 	b.hs	1b
 
@@ -412,6 +443,7 @@ LLookupStart\Function:
 	add	p13, p10, w11, UXTW #(1+PTRSHIFT)
 						// p13 = buckets + (mask << 1+PTRSHIFT)
 #elif CACHE_MASK_STORAGE == CACHE_MASK_STORAGE_HIGH_16
+    //[MC] 得到最后一个bucket
 	add	p13, p10, p11, LSR #(48 - (1+PTRSHIFT))
 						// p13 = buckets + (mask << 1+PTRSHIFT)
 						// see comment about maskZeroBits
@@ -421,6 +453,7 @@ LLookupStart\Function:
 #else
 #error Unsupported cache mask storage for ARM64.
 #endif
+    //[MC] 得到第一次查询的bucket
 	add	p12, p10, p12, LSL #(1+PTRSHIFT)
 						// p12 = first probed bucket
 
@@ -550,16 +583,21 @@ _objc_debug_taggedpointer_classes:
 
 	ENTRY _objc_msgSend
 	UNWIND _objc_msgSend, NoFrame
-
+    //[MC] 将p0(消息接收者)与0进行比较
 	cmp	p0, #0			// nil check and tagged pointer check
 #if SUPPORT_TAGGED_POINTERS
+    //[MC] 判断tagged pointer b.le ：判断上面cmp的值是小于等于 执行LNilOrTagged，否则直接往下走
 	b.le	LNilOrTagged		//  (MSB tagged pointer looks negative)
 #else
+    //[MC] 判断是否为空  b.eq ：cmp结果 等于 0 执行地址LReturnZero 否则往下
 	b.eq	LReturnZero
 #endif
+    //[MC] 将[x0]数据写入到寄存器中 即：p13寄存器保存了 对象的isa
 	ldr	p13, [x0]		// p13 = isa
+    //[MC] 得到calss
 	GetClassFromIsa_p16 p13, 1, x0	// p16 = class
 LGetIsaDone:
+    //[MC] 开始查找缓存
 	// calls imp or objc_msgSend_uncached
 	CacheLookup NORMAL, _objc_msgSend, __objc_msgSend_uncached
 

@@ -617,6 +617,7 @@ objc_object::rootTryRetain()
     return rootRetain(true, RRVariant::Fast) ? true : false;
 }
 
+//[MC]
 ALWAYS_INLINE id
 objc_object::rootRetain(bool tryRetain, objc_object::RRVariant variant)
 {
@@ -642,6 +643,7 @@ objc_object::rootRetain(bool tryRetain, objc_object::RRVariant variant)
         }
     }
 
+    //[MC] 未优化的isa 非nonpointer操作
     if (slowpath(!oldisa.nonpointer)) {
         // a Class is a Class forever, so we can perform this check once
         // outside of the CAS loop
@@ -651,6 +653,7 @@ objc_object::rootRetain(bool tryRetain, objc_object::RRVariant variant)
         }
     }
 
+    //[MC] do-while循环代码先将oldisa赋值给newisa，如果newisa是非nonpointer类型，会根据判断走sidetable_tryRetain或者sidetable_retain方法，如果extra_rc存满会走carry判断进行extra_rc存一半，循环外散列表存一半操作。先来看看sidetable_tryRetain方法：
     do {
         transcribeToSideTable = false;
         newisa = oldisa;
@@ -672,6 +675,8 @@ objc_object::rootRetain(bool tryRetain, objc_object::RRVariant variant)
                 return (id)this;
             }
         }
+        
+        //后面再执行newisa.bits = addc(newisa.bits, RC_ONE, 0, &carry)给extra_rc进行赋值，RC_ONE是开始存储extra_rc的位置。addc函数的作用是将newisa.bits和RC_ONE相加并存入newisa.bits当存满了carry值就为1。如果存满会将引用计数在extra_rc中存储一半然后做相关的标记，然后调用sidetable_addExtraRC_nolock方法
         uintptr_t carry;
         newisa.bits = addc(newisa.bits, RC_ONE, 0, &carry);  // extra_rc++
 
@@ -691,7 +696,7 @@ objc_object::rootRetain(bool tryRetain, objc_object::RRVariant variant)
         }
     } while (slowpath(!StoreExclusive(&isa.bits, &oldisa.bits, newisa.bits)));
 
-    if (variant == RRVariant::Full) {
+    if (variant == RRVariant::Full) {   //[MC] extra_rc 存满了
         if (slowpath(transcribeToSideTable)) {
             // Copy the other half of the retain counts to the side table.
             sidetable_addExtraRC_nolock(RC_HALF);
